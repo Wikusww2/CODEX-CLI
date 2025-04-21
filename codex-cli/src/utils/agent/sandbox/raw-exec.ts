@@ -11,6 +11,7 @@ import { log } from "../log.js";
 import { adaptCommandForPlatform } from "../platform-commands.js";
 import { spawn } from "child_process";
 import * as os from "os";
+import { getShell } from "../../getShell.js";
 
 // Maximum output cap: either MAX_OUTPUT_LINES lines or MAX_OUTPUT_BYTES bytes,
 // whichever limit is reached first.
@@ -38,56 +39,65 @@ export function exec(
     );
   }
 
-  const prog = adaptedCommand[0];
-  if (typeof prog !== "string") {
-    return Promise.resolve({
-      stdout: "",
-      stderr: "command[0] is not a string",
-      exitCode: 1,
-    });
-  }
+  // -------------------------------------------------------------------------
+  // Stdio + process‑group settings for the child process – shared across
+  // Windows/POSIX branches.  We compute this once so it is available for both
+  // spawn paths below.
+  // -------------------------------------------------------------------------
 
-  // We use spawn() instead of exec() or execFile() so that we can set the
-  // stdio options to "ignore" for stdin. Ripgrep has a heuristic where it
-  // may try to read from stdin as explained here:
-  //
-  // https://github.com/BurntSushi/ripgrep/blob/e2362d4d5185d02fa857bf381e7bd52e66fafc73/crates/core/flags/hiargs.rs#L1101-L1103
-  //
-  // This can be a problem because if you save the following to a file and
-  // run it with `node`, it will hang forever:
-  //
-  // ```
-  // const {execFile} = require('child_process');
-  //
-  // execFile('rg', ['foo'], (error, stdout, stderr) => {
-  //   if (error) {
-  //     console.error(`error: ${error}n\nstderr: ${stderr}`);
-  //   } else {
-  //     console.log(`stdout: ${stdout}`);
-  //   }
-  // });
-  // ```
-  //
-  // Even if you pass `{stdio: ["ignore", "pipe", "pipe"] }` to execFile(), the
-  // hang still happens as the `stdio` is seemingly ignored. Using spawn()
-  // works around this issue.
   const fullOptions: SpawnOptionsWithStdioTuple<
     StdioNull,
     StdioPipe,
     StdioPipe
   > = {
     ...options,
-    // Inherit any caller‑supplied stdio flags but force stdin to "ignore" so
-    // the child never attempts to read from us (see lengthy comment above).
+    // Force stdin to "ignore" so tools that auto‑detect interactive input
+    // (e.g. ripgrep) never block waiting for us.
     stdio: ["ignore", "pipe", "pipe"],
-    // Launch the child in its *own* process group so that we can later send a
-    // single signal to the entire group – this reliably terminates not only
-    // the immediate child but also any grandchildren it might have spawned
-    // (think `bash -c "sleep 999"`).
-    detached: true,
+    // Launch in a separate process group except on Windows where negative PIDs
+    // are not supported (we fall back to a feature flag for advanced users).
+    detached:
+      process.platform !== "win32" || process.env["CODEX_DETACH"] === "1",
   };
 
-  const child: ChildProcess = spawn(prog, adaptedCommand.slice(1), fullOptions);
+  // ----------------------------------------------------------------------------------
+  // Decide how to spawn the process:
+  //   • On Windows we invoke the command *through* the user's shell (PowerShell/cmd)
+  //     so built‑ins like `dir` work.
+  //   • On POSIX we spawn the executable directly to preserve argv semantics – this
+  //     keeps the original unit‑tests (which inspect exact exit codes/stdout) intact.
+  // ----------------------------------------------------------------------------------
+
+  let child: ChildProcess;
+
+  if (process.platform === "win32") {
+    // Use the preferred shell for Windows (PowerShell if available, else cmd.exe)
+    const { cmd: shellCmd, args: shellArgs } = getShell();
+    if (typeof shellCmd !== "string") {
+      return Promise.resolve({
+        stdout: "",
+        stderr: "command[0] is not a string",
+        exitCode: 1,
+      });
+    }
+
+    // Pass the **entire** command as a single string to the shell so it can handle
+    // parsing / built‑ins. We join with spaces since Windows shells generally use
+    // a single command string.
+    child = spawn(shellCmd, [...shellArgs, adaptedCommand.join(" ")], fullOptions);
+  } else {
+    // POSIX – call the program directly (unchanged behaviour).
+    const prog = adaptedCommand[0];
+    if (typeof prog !== "string") {
+      return Promise.resolve({
+        stdout: "",
+        stderr: "command[0] is not a string",
+        exitCode: 1,
+      });
+    }
+    child = spawn(prog, adaptedCommand.slice(1), fullOptions);
+  }
+
   // If an AbortSignal is provided, ensure the spawned process is terminated
   // when the signal is triggered so that cancellations propagate down to any
   // long‑running child processes. We default to SIGTERM to give the process a
@@ -152,8 +162,26 @@ export function exec(
     const stderrCollector = createTruncatingCollector(child.stderr!);
 
     child.on("exit", (code, signal) => {
-      const stdout = stdoutCollector.getString();
-      const stderr = stderrCollector.getString();
+      const stdoutBuf = Buffer.concat(stdoutChunks);
+      const stderrBuf = Buffer.concat(stderrChunks);
+
+      const decode = (buf: Buffer): string => {
+        if (process.platform !== "win32") {
+          return buf.toString("utf8");
+        }
+        // Heuristic: treat as UTF‑16LE only when *most* odd bytes are 0x00
+        const sample = buf.subarray(0, 2000); // small sample is enough
+        let nulCount = 0;
+        for (let i = 1; i < sample.length; i += 2) {
+          if (sample[i] === 0) nulCount += 1;
+        }
+        const ratio = sample.length > 0 ? nulCount / (sample.length / 2) : 0;
+        const encoding = ratio > 0.6 ? "utf16le" : "utf8"; // >60% NULs → likely UTF‑16LE
+        return buf.toString(encoding);
+      };
+
+      const stdout = decode(stdoutBuf);
+      const stderr = decode(stderrBuf);
 
       // Map (code, signal) to an exit code. We expect exactly one of the two
       // values to be non-null, but we code defensively to handle the case where
