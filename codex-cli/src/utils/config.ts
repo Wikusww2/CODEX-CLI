@@ -9,11 +9,24 @@
 import type { FullAutoErrorMode } from "./auto-approval-mode.js";
 
 import { AutoApprovalMode } from "./auto-approval-mode.js";
-import { log } from "./logger/log.js";
+import { log, isLoggingEnabled } from "./logger/log.js";
+import {
+  getConfigDir,
+  getDataDir,
+  getLegacyConfigDir,
+  legacyConfigDirExists,
+  ensureDirectoryExists,
+} from "./platform-dirs.js";
 import { providers } from "./providers.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+} from "fs";
 import { load as loadYaml, dump as dumpYaml } from "js-yaml";
-import { homedir } from "os";
 import { dirname, join, extname, resolve as resolvePath } from "path";
 
 export const DEFAULT_AGENTIC_MODEL = "o4-mini";
@@ -21,16 +34,46 @@ export const DEFAULT_FULL_CONTEXT_MODEL = "gpt-4.1";
 export const DEFAULT_APPROVAL_MODE = AutoApprovalMode.SUGGEST;
 export const DEFAULT_INSTRUCTIONS = "";
 
-export const CONFIG_DIR = join(homedir(), ".codex");
+// Default rate limit retry settings
+export const DEFAULT_RATE_LIMIT_MAX_RETRIES = 5;
+export const DEFAULT_RATE_LIMIT_INITIAL_RETRY_DELAY_MS = 2500;
+export const DEFAULT_RATE_LIMIT_MAX_RETRY_DELAY_MS = 60000; // 1 minute
+export const DEFAULT_RATE_LIMIT_JITTER_FACTOR = 0.25; // 25% random jitter
+
+// Get the platform-specific config directory
+export const CONFIG_DIR = getConfigDir();
+// Legacy config directory for backward compatibility
+export const LEGACY_CONFIG_DIR = getLegacyConfigDir();
+
+// Config file paths in the new location
 export const CONFIG_JSON_FILEPATH = join(CONFIG_DIR, "config.json");
 export const CONFIG_YAML_FILEPATH = join(CONFIG_DIR, "config.yaml");
 export const CONFIG_YML_FILEPATH = join(CONFIG_DIR, "config.yml");
+
+// Legacy config file paths for backward compatibility
+export const LEGACY_CONFIG_JSON_FILEPATH = join(
+  LEGACY_CONFIG_DIR,
+  "config.json",
+);
+export const LEGACY_CONFIG_YAML_FILEPATH = join(
+  LEGACY_CONFIG_DIR,
+  "config.yaml",
+);
+export const LEGACY_CONFIG_YML_FILEPATH = join(LEGACY_CONFIG_DIR, "config.yml");
+export const LEGACY_INSTRUCTIONS_FILEPATH = join(
+  LEGACY_CONFIG_DIR,
+  "instructions.md",
+);
 
 // Keep the original constant name for backward compatibility, but point it at
 // the default JSON path. Code that relies on this constant will continue to
 // work unchanged.
 export const CONFIG_FILEPATH = CONFIG_JSON_FILEPATH;
 export const INSTRUCTIONS_FILEPATH = join(CONFIG_DIR, "instructions.md");
+
+// Data directory for sessions and other persistent data
+export const DATA_DIR = getDataDir();
+export const SESSIONS_DIR = join(DATA_DIR, "sessions");
 
 export const OPENAI_TIMEOUT_MS =
   parseInt(process.env["OPENAI_TIMEOUT_MS"] || "0", 10) || undefined;
@@ -41,7 +84,11 @@ export function setApiKey(apiKey: string): void {
   OPENAI_API_KEY = apiKey;
 }
 
-export function getBaseUrl(provider: string): string | undefined {
+export function getBaseUrl(provider?: string): string | undefined {
+  if (!provider) {
+    return OPENAI_BASE_URL;
+  }
+
   const providerInfo = providers[provider.toLowerCase()];
   if (providerInfo) {
     return providerInfo.baseURL;
@@ -49,7 +96,11 @@ export function getBaseUrl(provider: string): string | undefined {
   return undefined;
 }
 
-export function getApiKey(provider: string): string | undefined {
+export function getApiKey(provider?: string): string | undefined {
+  if (!provider) {
+    return OPENAI_API_KEY;
+  }
+
   const providerInfo = providers[provider.toLowerCase()];
   if (providerInfo) {
     if (providerInfo.name === "Ollama") {
@@ -60,19 +111,29 @@ export function getApiKey(provider: string): string | undefined {
 
   return undefined;
 }
-
 // Formatting (quiet mode-only).
 export const PRETTY_PRINT = Boolean(process.env["PRETTY_PRINT"] || "");
 
 // Represents config as persisted in config.json.
+export type RateLimitConfig = {
+  maxRetries: number;
+  initialRetryDelayMs: number;
+  maxRetryDelayMs: number;
+  jitterFactor: number;
+};
+
 export type StoredConfig = {
   model?: string;
-  provider?: string;
   approvalMode?: AutoApprovalMode;
   fullAutoErrorMode?: FullAutoErrorMode;
   memory?: MemoryConfig;
+  rateLimits?: RateLimitConfig;
   /** Whether to enable desktop notifications for responses */
   notify?: boolean;
+  /** Provider for API calls */
+  provider?: string;
+  /** Safe commands that don't require approval */
+  safeCommands?: Array<string>;
   history?: {
     maxSize?: number;
     saveHistory?: boolean;
@@ -96,13 +157,17 @@ export type MemoryConfig = {
 export type AppConfig = {
   apiKey?: string;
   model: string;
-  provider?: string;
   instructions: string;
   approvalMode?: AutoApprovalMode;
   fullAutoErrorMode?: FullAutoErrorMode;
   memory?: MemoryConfig;
+  rateLimits?: RateLimitConfig;
   /** Whether to enable desktop notifications for responses */
   notify: boolean;
+  /** Provider for API calls */
+  provider?: string;
+  /** Safe commands that don't require approval */
+  safeCommands?: Array<string>;
 
   /** Enable the "flex-mode" processing mode for supported models (o3, o4-mini) */
   flexMode?: boolean;
@@ -214,16 +279,29 @@ export const loadConfig = (
   instructionsPath: string | undefined = INSTRUCTIONS_FILEPATH,
   options: LoadConfigOptions = {},
 ): AppConfig => {
+  // Check for legacy config files and migrate if needed
+  migrateFromLegacyIfNeeded();
   // Determine the actual path to load. If the provided path doesn't exist and
   // the caller passed the default JSON path, automatically fall back to YAML
-  // variants.
+  // variants or legacy paths.
   let actualConfigPath = configPath;
   if (!existsSync(actualConfigPath)) {
     if (configPath === CONFIG_FILEPATH) {
+      // Try new location YAML variants
       if (existsSync(CONFIG_YAML_FILEPATH)) {
         actualConfigPath = CONFIG_YAML_FILEPATH;
       } else if (existsSync(CONFIG_YML_FILEPATH)) {
         actualConfigPath = CONFIG_YML_FILEPATH;
+      }
+      // If still not found, try legacy location
+      else if (legacyConfigDirExists()) {
+        if (existsSync(LEGACY_CONFIG_JSON_FILEPATH)) {
+          actualConfigPath = LEGACY_CONFIG_JSON_FILEPATH;
+        } else if (existsSync(LEGACY_CONFIG_YAML_FILEPATH)) {
+          actualConfigPath = LEGACY_CONFIG_YAML_FILEPATH;
+        } else if (existsSync(LEGACY_CONFIG_YML_FILEPATH)) {
+          actualConfigPath = LEGACY_CONFIG_YML_FILEPATH;
+        }
       }
     }
   }
@@ -244,11 +322,21 @@ export const loadConfig = (
     }
   }
 
-  const instructionsFilePathResolved =
-    instructionsPath ?? INSTRUCTIONS_FILEPATH;
-  const userInstructions = existsSync(instructionsFilePathResolved)
-    ? readFileSync(instructionsFilePathResolved, "utf-8")
-    : DEFAULT_INSTRUCTIONS;
+  // Resolve instructions path, checking both new and legacy locations
+  let instructionsFilePathResolved = instructionsPath ?? INSTRUCTIONS_FILEPATH;
+  let userInstructions = DEFAULT_INSTRUCTIONS;
+
+  if (existsSync(instructionsFilePathResolved)) {
+    userInstructions = readFileSync(instructionsFilePathResolved, "utf-8");
+  } else if (
+    legacyConfigDirExists() &&
+    existsSync(LEGACY_INSTRUCTIONS_FILEPATH)
+  ) {
+    // Try legacy instructions path if the new one doesn't exist
+    userInstructions = readFileSync(LEGACY_INSTRUCTIONS_FILEPATH, "utf-8");
+    // Update the resolved path to point to the legacy location for potential saving later
+    instructionsFilePathResolved = LEGACY_INSTRUCTIONS_FILEPATH;
+  }
 
   // Project doc support.
   const shouldLoadProjectDoc =
@@ -289,7 +377,6 @@ export const loadConfig = (
       (options.isFullContext
         ? DEFAULT_FULL_CONTEXT_MODEL
         : DEFAULT_AGENTIC_MODEL),
-    provider: storedConfig.provider,
     instructions: combinedInstructions,
     notify: storedConfig.notify === true,
     approvalMode: storedConfig.approvalMode,
@@ -370,8 +457,118 @@ export const loadConfig = (
     };
   }
 
+  // Load user-defined safe commands
+  if (Array.isArray(storedConfig.safeCommands)) {
+    config.safeCommands = storedConfig.safeCommands.map(String);
+  } else {
+    config.safeCommands = [];
+  }
+
+  // Add rate limit configuration if present, or use defaults
+  if (storedConfig.rateLimits) {
+    config.rateLimits = storedConfig.rateLimits;
+  } else {
+    config.rateLimits = {
+      maxRetries: DEFAULT_RATE_LIMIT_MAX_RETRIES,
+      initialRetryDelayMs: DEFAULT_RATE_LIMIT_INITIAL_RETRY_DELAY_MS,
+      maxRetryDelayMs: DEFAULT_RATE_LIMIT_MAX_RETRY_DELAY_MS,
+      jitterFactor: DEFAULT_RATE_LIMIT_JITTER_FACTOR,
+    };
+  }
   return config;
 };
+
+/**
+ * Migrates configuration files from the legacy ~/.codex directory to the platform-specific
+ * directory if needed. This ensures a smooth transition for existing users.
+ */
+export function migrateFromLegacyIfNeeded(): void {
+  // Only migrate if legacy config exists and new config doesn't
+  if (
+    !legacyConfigDirExists() ||
+    existsSync(CONFIG_JSON_FILEPATH) ||
+    existsSync(CONFIG_YAML_FILEPATH) ||
+    existsSync(CONFIG_YML_FILEPATH)
+  ) {
+    return;
+  }
+
+  try {
+    // Ensure the new config directory exists
+    ensureDirectoryExists(CONFIG_DIR);
+    ensureDirectoryExists(DATA_DIR);
+    ensureDirectoryExists(SESSIONS_DIR);
+
+    // Migrate config files
+    if (existsSync(LEGACY_CONFIG_JSON_FILEPATH)) {
+      const content = readFileSync(LEGACY_CONFIG_JSON_FILEPATH, "utf-8");
+      writeFileSync(CONFIG_JSON_FILEPATH, content, "utf-8");
+      if (isLoggingEnabled()) {
+        log(
+          `Migrated config from ${LEGACY_CONFIG_JSON_FILEPATH} to ${CONFIG_JSON_FILEPATH}`,
+        );
+      }
+    } else if (existsSync(LEGACY_CONFIG_YAML_FILEPATH)) {
+      const content = readFileSync(LEGACY_CONFIG_YAML_FILEPATH, "utf-8");
+      writeFileSync(CONFIG_YAML_FILEPATH, content, "utf-8");
+      if (isLoggingEnabled()) {
+        log(
+          `Migrated config from ${LEGACY_CONFIG_YAML_FILEPATH} to ${CONFIG_YAML_FILEPATH}`,
+        );
+      }
+    } else if (existsSync(LEGACY_CONFIG_YML_FILEPATH)) {
+      const content = readFileSync(LEGACY_CONFIG_YML_FILEPATH, "utf-8");
+      writeFileSync(CONFIG_YML_FILEPATH, content, "utf-8");
+      if (isLoggingEnabled()) {
+        log(
+          `Migrated config from ${LEGACY_CONFIG_YML_FILEPATH} to ${CONFIG_YML_FILEPATH}`,
+        );
+      }
+    }
+
+    // Migrate instructions file
+    if (existsSync(LEGACY_INSTRUCTIONS_FILEPATH)) {
+      const content = readFileSync(LEGACY_INSTRUCTIONS_FILEPATH, "utf-8");
+      writeFileSync(INSTRUCTIONS_FILEPATH, content, "utf-8");
+      if (isLoggingEnabled()) {
+        log(
+          `Migrated instructions from ${LEGACY_INSTRUCTIONS_FILEPATH} to ${INSTRUCTIONS_FILEPATH}`,
+        );
+      }
+    }
+
+    // Migrate sessions directory if it exists
+    const legacySessionsDir = join(LEGACY_CONFIG_DIR, "sessions");
+    if (existsSync(legacySessionsDir)) {
+      // Read all files in the legacy sessions directory
+      const sessionFiles = readdirSync(legacySessionsDir);
+
+      // Copy each file to the new sessions directory
+      for (const file of sessionFiles) {
+        const sourcePath = join(legacySessionsDir, file);
+        const destPath = join(SESSIONS_DIR, file);
+
+        // Only copy files, not directories
+        if (statSync(sourcePath).isFile()) {
+          const content = readFileSync(sourcePath);
+          writeFileSync(destPath, content);
+          if (isLoggingEnabled()) {
+            log(`Migrated session file from ${sourcePath} to ${destPath}`);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    if (isLoggingEnabled()) {
+      log(`Error during migration from legacy config: ${error}`);
+    }
+    // Continue with execution even if migration fails
+  }
+
+  if (isLoggingEnabled()) {
+    log("Migration from legacy config directory completed.");
+  }
+}
 
 export const saveConfig = (
   config: AppConfig,
@@ -401,8 +598,8 @@ export const saveConfig = (
   // Create the config object to save
   const configToSave: StoredConfig = {
     model: config.model,
-    provider: config.provider,
     approvalMode: config.approvalMode,
+    provider: config.provider,
   };
 
   // Add history settings if they exist
@@ -415,8 +612,44 @@ export const saveConfig = (
   }
 
   if (ext === ".yaml" || ext === ".yml") {
+    // Add rate limits to the config to save
+    if (config.rateLimits) {
+      configToSave.rateLimits = config.rateLimits;
+    }
+
+    // Add fullAutoErrorMode if it exists
+    if (config.fullAutoErrorMode) {
+      configToSave.fullAutoErrorMode = config.fullAutoErrorMode;
+    }
+
+    // Add memory if it exists
+    if (config.memory) {
+      configToSave.memory = config.memory;
+    }
+
+    // Add notify setting
+    configToSave.notify = config.notify;
+
     writeFileSync(targetPath, dumpYaml(configToSave), "utf-8");
   } else {
+    // Add rate limits to the config to save
+    if (config.rateLimits) {
+      configToSave.rateLimits = config.rateLimits;
+    }
+
+    // Add fullAutoErrorMode if it exists
+    if (config.fullAutoErrorMode) {
+      configToSave.fullAutoErrorMode = config.fullAutoErrorMode;
+    }
+
+    // Add memory if it exists
+    if (config.memory) {
+      configToSave.memory = config.memory;
+    }
+
+    // Add notify setting
+    configToSave.notify = config.notify;
+
     writeFileSync(targetPath, JSON.stringify(configToSave, null, 2), "utf-8");
   }
 

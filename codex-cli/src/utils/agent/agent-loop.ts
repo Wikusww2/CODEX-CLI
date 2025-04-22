@@ -1,19 +1,24 @@
 import type { ReviewDecision } from "./review.js";
 import type { ApplyPatchCommand, ApprovalPolicy } from "../../approvals.js";
 import type { AppConfig } from "../config.js";
-import type { ResponseEvent } from "../responses.js";
 import type {
   ResponseFunctionToolCall,
   ResponseInputItem,
   ResponseItem,
-  ResponseCreateParams,
 } from "openai/resources/responses/responses.mjs";
 import type { Reasoning } from "openai/resources.mjs";
 
-import { OPENAI_TIMEOUT_MS, getApiKey, getBaseUrl } from "../config.js";
+import {
+  OPENAI_TIMEOUT_MS,
+  DEFAULT_RATE_LIMIT_MAX_RETRIES,
+  DEFAULT_RATE_LIMIT_INITIAL_RETRY_DELAY_MS,
+  DEFAULT_RATE_LIMIT_MAX_RETRY_DELAY_MS,
+  DEFAULT_RATE_LIMIT_JITTER_FACTOR,
+  getBaseUrl,
+  getApiKey,
+} from "../config.js";
 import { log } from "../logger/log.js";
 import { parseToolCallArguments } from "../parsers.js";
-import { responsesCreateViaChatCompletions } from "../responses.js";
 import {
   ORIGIN,
   CLI_VERSION,
@@ -26,10 +31,44 @@ import { randomUUID } from "node:crypto";
 import OpenAI, { APIConnectionTimeoutError } from "openai";
 
 // Wait time before retrying after rate limit errors (ms).
-const RATE_LIMIT_RETRY_WAIT_MS = parseInt(
-  process.env["OPENAI_RATE_LIMIT_RETRY_WAIT_MS"] || "2500",
-  10,
-);
+// This is now handled by the calculateBackoffDelay function
+
+/**
+ * Calculates the delay for the next retry attempt using exponential backoff with jitter.
+ *
+ * @param attempt The current attempt number (1-based)
+ * @param initialDelayMs The initial delay in milliseconds
+ * @param maxDelayMs The maximum delay in milliseconds
+ * @param jitterFactor The jitter factor (0-1) to add randomness to the delay
+ * @param suggestedDelayMs Optional suggested delay from the API response
+ * @returns The delay in milliseconds to wait before the next retry
+ */
+function calculateBackoffDelay(
+  attempt: number,
+  initialDelayMs: number,
+  maxDelayMs: number,
+  jitterFactor: number,
+  suggestedDelayMs?: number,
+): number {
+  // If we have a suggested delay from the API, use that (with a small buffer)
+  if (suggestedDelayMs && !Number.isNaN(suggestedDelayMs)) {
+    // Add 10% to the suggested delay to account for network latency
+    return Math.min(suggestedDelayMs * 1.1, maxDelayMs);
+  }
+
+  // Calculate exponential backoff: initialDelay * 2^(attempt-1)
+  const exponentialDelay = initialDelayMs * Math.pow(2, attempt - 1);
+
+  // Apply maximum delay cap
+  const cappedDelay = Math.min(exponentialDelay, maxDelayMs);
+
+  // Apply jitter: random value between (1-jitterFactor) and (1+jitterFactor) times the delay
+  // This helps prevent thundering herd problem when multiple clients retry at the same time
+  const jitterMultiplier = 1 + jitterFactor * (Math.random() * 2 - 1);
+
+  // Return the final delay with jitter, ensuring it's at least initialDelayMs
+  return Math.max(initialDelayMs, Math.round(cappedDelay * jitterMultiplier));
+}
 
 export type CommandConfirmation = {
   review: ReviewDecision;
@@ -42,12 +81,13 @@ const alreadyProcessedResponses = new Set();
 
 type AgentLoopParams = {
   model: string;
-  provider?: string;
   config?: AppConfig;
   instructions?: string;
   approvalPolicy: ApprovalPolicy;
   onItem: (item: ResponseItem) => void;
   onLoading: (loading: boolean) => void;
+  /** Provider for API calls */
+  provider?: string;
 
   /** Extra writable roots to use with sandbox execution. */
   additionalWritableRoots: ReadonlyArray<string>;
@@ -62,7 +102,6 @@ type AgentLoopParams = {
 
 export class AgentLoop {
   private model: string;
-  private provider: string;
   private instructions?: string;
   private approvalPolicy: ApprovalPolicy;
   private config: AppConfig;
@@ -203,7 +242,6 @@ export class AgentLoop {
   // private cumulativeThinkingMs = 0;
   constructor({
     model,
-    provider = "openai",
     instructions,
     approvalPolicy,
     // `config` used to be required.  Some unit‑tests (and potentially other
@@ -220,7 +258,6 @@ export class AgentLoop {
     additionalWritableRoots,
   }: AgentLoopParams & { config?: AppConfig }) {
     this.model = model;
-    this.provider = provider;
     this.instructions = instructions;
     this.approvalPolicy = approvalPolicy;
 
@@ -243,9 +280,7 @@ export class AgentLoop {
     this.sessionId = getSessionId() || randomUUID().replaceAll("-", "");
     // Configure OpenAI client with optional timeout (ms) from environment
     const timeoutMs = OPENAI_TIMEOUT_MS;
-    const apiKey = getApiKey(this.provider);
-    const baseURL = getBaseUrl(this.provider);
-
+    const apiKey = this.config.apiKey ?? getApiKey() ?? "";
     this.oai = new OpenAI({
       // The OpenAI JS SDK only requires `apiKey` when making requests against
       // the official API.  When running unit‑tests we stub out all network
@@ -254,7 +289,7 @@ export class AgentLoop {
       // errors inside the SDK (it validates that `apiKey` is a non‑empty
       // string when the field is present).
       ...(apiKey ? { apiKey } : {}),
-      baseURL,
+      baseURL: getBaseUrl(),
       defaultHeaders: {
         originator: ORIGIN,
         version: CLI_VERSION,
@@ -487,13 +522,18 @@ export class AgentLoop {
         // Send request to OpenAI with retry on timeout
         let stream;
 
-        // Retry loop for transient errors. Up to MAX_RETRIES attempts.
-        const MAX_RETRIES = 5;
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        // Retry loop for transient errors. Use config for max retries or fall back to default.
+        const maxRetries =
+          this.config.rateLimits?.maxRetries ?? DEFAULT_RATE_LIMIT_MAX_RETRIES;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
             let reasoning: Reasoning | undefined;
             if (this.model.startsWith("o")) {
-              reasoning = { effort: "high" };
+              // Create a reasoning object with the properties we need
+              // The OpenAI SDK type definitions might not be up to date with the latest API features
+              type ExtendedReasoning = Reasoning & { summary?: string };
+              reasoning = { effort: "high" } as ExtendedReasoning;
+
               if (this.model === "o3" || this.model === "o4-mini") {
                 reasoning.summary = "auto";
               }
@@ -501,23 +541,11 @@ export class AgentLoop {
             const mergedInstructions = [prefix, this.instructions]
               .filter(Boolean)
               .join("\n");
-
-            const responseCall =
-              !this.config.provider ||
-              this.config.provider?.toLowerCase() === "openai"
-                ? (params: ResponseCreateParams) =>
-                    this.oai.responses.create(params)
-                : (params: ResponseCreateParams) =>
-                    responsesCreateViaChatCompletions(
-                      this.oai,
-                      params as ResponseCreateParams & { stream: true },
-                    );
             log(
               `instructions (length ${mergedInstructions.length}): ${mergedInstructions}`,
             );
-
             // eslint-disable-next-line no-await-in-loop
-            stream = await responseCall({
+            stream = await this.oai.responses.create({
               model: this.model,
               instructions: mergedInstructions,
               previous_response_id: lastResponseId || undefined,
@@ -573,10 +601,10 @@ export class AgentLoop {
             const isServerError = typeof status === "number" && status >= 500;
             if (
               (isTimeout || isServerError || isConnectionError) &&
-              attempt < MAX_RETRIES
+              attempt < maxRetries
             ) {
               log(
-                `OpenAI request failed (attempt ${attempt}/${MAX_RETRIES}), retrying...`,
+                `OpenAI request failed (attempt ${attempt}/${maxRetries}), retrying...`,
               );
               continue;
             }
@@ -609,22 +637,37 @@ export class AgentLoop {
               errCtx.type === "rate_limit_exceeded" ||
               /rate limit/i.test(errCtx.message ?? "");
             if (isRateLimit) {
-              if (attempt < MAX_RETRIES) {
-                // Exponential backoff: base wait * 2^(attempt-1), or use suggested retry time
-                // if provided.
-                let delayMs = RATE_LIMIT_RETRY_WAIT_MS * 2 ** (attempt - 1);
+              if (attempt < maxRetries) {
+                // Get rate limit config or use defaults
+                const initialRetryDelayMs =
+                  this.config.rateLimits?.initialRetryDelayMs ??
+                  DEFAULT_RATE_LIMIT_INITIAL_RETRY_DELAY_MS;
+                const maxRetryDelayMs =
+                  this.config.rateLimits?.maxRetryDelayMs ??
+                  DEFAULT_RATE_LIMIT_MAX_RETRY_DELAY_MS;
+                const jitterFactor =
+                  this.config.rateLimits?.jitterFactor ??
+                  DEFAULT_RATE_LIMIT_JITTER_FACTOR;
 
                 // Parse suggested retry time from error message, e.g., "Please try again in 1.3s"
+                let suggestedDelayMs: number | undefined;
                 const msg = errCtx?.message ?? "";
                 const m = /(?:retry|try) again in ([\d.]+)s/i.exec(msg);
                 if (m && m[1]) {
-                  const suggested = parseFloat(m[1]) * 1000;
-                  if (!Number.isNaN(suggested)) {
-                    delayMs = suggested;
-                  }
+                  suggestedDelayMs = parseFloat(m[1]) * 1000;
                 }
+
+                // Calculate backoff delay with jitter
+                const delayMs = calculateBackoffDelay(
+                  attempt,
+                  initialRetryDelayMs,
+                  maxRetryDelayMs,
+                  jitterFactor,
+                  suggestedDelayMs,
+                );
+
                 log(
-                  `OpenAI rate limit exceeded (attempt ${attempt}/${MAX_RETRIES}), retrying in ${Math.round(
+                  `OpenAI rate limit exceeded (attempt ${attempt}/${maxRetries}), retrying in ${Math.round(
                     delayMs,
                   )} ms...`,
                 );
@@ -741,7 +784,7 @@ export class AgentLoop {
 
         try {
           // eslint-disable-next-line no-await-in-loop
-          for await (const event of stream as AsyncIterable<ResponseEvent>) {
+          for await (const event of stream) {
             log(`AgentLoop.run(): response event ${event.type}`);
 
             // process and surface each item (no-op until we can depend on streaming events)
