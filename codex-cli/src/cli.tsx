@@ -69,6 +69,7 @@ const cli = meow(
 
     --no-project-doc           Do not automatically include the repository's 'codex.md'
     --project-doc <file>       Include an additional markdown file at <file> as context
+    --no-repo-config           Do not load repository-specific configuration from .codex/config.json
     --full-stdout              Do not truncate stdout/stderr from command outputs
     --notify                   Enable desktop notifications for responses
 
@@ -148,6 +149,10 @@ const cli = meow(
       projectDoc: {
         type: "string",
         description: "Path to a markdown file to include as project doc",
+      },
+      noRepoConfig: {
+        type: "boolean",
+        description: "Disable repository-specific configuration",
       },
       flexMode: {
         type: "boolean",
@@ -246,6 +251,7 @@ let config = loadConfig(undefined, undefined, {
   disableProjectDoc: Boolean(cli.flags.noProjectDoc),
   projectDocPath: cli.flags.projectDoc,
   isFullContext: fullContextMode,
+  disableRepoConfig: Boolean(cli.flags.noRepoConfig),
 });
 
 const prompt = cli.input[0];
