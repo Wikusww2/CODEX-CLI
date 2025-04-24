@@ -4,6 +4,7 @@ import {
   identify_files_added,
   identify_files_needed,
 } from "./utils/agent/apply-patch";
+import { loadConfig } from "./utils/config";
 import * as path from "path";
 import { parse } from "shell-quote";
 
@@ -156,14 +157,24 @@ export function canAutoApprove(
     }
   }
 
-  return policy === "full-auto"
-    ? {
-        type: "auto-approve",
-        reason: "Full auto mode",
-        group: "Running commands",
-        runInSandbox: true,
-      }
-    : { type: "ask-user" };
+  // If we're in full-auto mode, approve everything
+  if (policy === "full-auto") {
+    return {
+      type: "auto-approve",
+      reason: "Full auto mode",
+      group: "Running commands",
+      runInSandbox: true,
+    };
+  }
+
+  // Check to see if command is whitelisted
+  const whitelistAssessment = isCommandWhitelisted(command);
+  if (whitelistAssessment != null) {
+    return whitelistAssessment;
+  }
+
+  // If not whitelisted, ask the user
+  return { type: "ask-user" };
 }
 
 function canAutoApproveApplyPatch(
@@ -483,6 +494,28 @@ const UNSAFE_OPTIONS_FOR_FIND_COMMAND: ReadonlySet<string> = new Set([
   "-fprint0",
   "-fprintf",
 ]);
+
+function isCommandWhitelisted(
+  command: ReadonlyArray<string>,
+): SafetyAssessment | null {
+  const whitelist = loadConfig()?.commandWhitelist;
+  if (!whitelist?.length) {
+    return null;
+  }
+
+  const cmdString = command.join(" ");
+  for (const pattern of whitelist) {
+    if (cmdString.startsWith(pattern)) {
+      return {
+        type: "auto-approve",
+        reason: "Command whitelisted by user",
+        group: "Whitelisted",
+        runInSandbox: false,
+      };
+    }
+  }
+  return null;
+}
 
 // ---------------- Helper utilities for complex shell expressions -----------------
 

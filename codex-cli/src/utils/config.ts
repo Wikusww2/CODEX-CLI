@@ -94,6 +94,8 @@ export type StoredConfig = {
   memory?: MemoryConfig;
   /** Whether to enable desktop notifications for responses */
   notify?: boolean;
+  /** List of commands that can be auto-approved without prompting */
+  commandWhitelist?: Array<string>;
   /** Disable server-side response storage (send full transcript each request) */
   disableResponseStorage?: boolean;
   providers?: Record<string, { name: string; baseURL: string; envKey: string }>;
@@ -127,6 +129,8 @@ export type AppConfig = {
   memory?: MemoryConfig;
   /** Whether to enable desktop notifications for responses */
   notify: boolean;
+  /** List of commands that can be auto-approved without prompting */
+  commandWhitelist?: Array<string>;
 
   /** Disable server-side response storage (send full transcript each request) */
   disableResponseStorage?: boolean;
@@ -324,6 +328,7 @@ export const loadConfig = (
     instructions: combinedInstructions,
     notify: storedConfig.notify === true,
     approvalMode: storedConfig.approvalMode,
+    commandWhitelist: storedConfig.commandWhitelist ?? [],
     disableResponseStorage: storedConfig.disableResponseStorage ?? false,
   };
 
@@ -439,6 +444,7 @@ export const saveConfig = (
     provider: config.provider,
     providers: config.providers,
     approvalMode: config.approvalMode,
+    commandWhitelist: config.commandWhitelist,
   };
 
   // Add history settings if they exist

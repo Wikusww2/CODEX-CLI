@@ -1,7 +1,13 @@
 import type { SafetyAssessment } from "../src/approvals";
 
 import { canAutoApprove } from "../src/approvals";
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
+
+vi.mock("../src/utils/config", () => ({
+  loadConfig: () => ({
+    commandWhitelist: ["npm install", "pip install", "yarn add"],
+  }),
+}));
 
 describe("canAutoApprove()", () => {
   const env = {
@@ -94,6 +100,34 @@ describe("canAutoApprove()", () => {
     expect(check(["pytest"])).toEqual({ type: "ask-user" });
 
     expect(check(["cargo", "build"])).toEqual({ type: "ask-user" });
+  });
+
+  test("whitelisted commands should be auto-approved", async () => {
+    expect(check(["npm", "install"])).toEqual({
+      type: "auto-approve",
+      reason: "Command whitelisted by user",
+      group: "Whitelisted",
+      runInSandbox: false,
+    });
+
+    expect(check(["pip", "install", "requests"])).toEqual({
+      type: "auto-approve",
+      reason: "Command whitelisted by user",
+      group: "Whitelisted",
+      runInSandbox: false,
+    });
+
+    expect(check(["yarn", "add", "express"])).toEqual({
+      type: "auto-approve",
+      reason: "Command whitelisted by user",
+      group: "Whitelisted",
+      runInSandbox: false,
+    });
+
+    // Non-whitelisted commands should still require approval
+    expect(check(["cargo", "install"])).toEqual({
+      type: "ask-user",
+    });
   });
 
   test("find", () => {

@@ -16,6 +16,7 @@
 - [Quickstart](#quickstart)
 - [Why Codex?](#why-codex)
 - [Security Model & Permissions](#security-model--permissions)
+  - [Whitelisting Commands](#whitelisting-commands)
   - [Platform sandboxing details](#platform-sandboxing-details)
 - [System Requirements](#system-requirements)
 - [CLI Reference](#cli-reference)
@@ -161,8 +162,16 @@ will also show a warning/confirmation if you start in **auto-edit** or
 **full-auto** while the directory is _not_ tracked by Git, so you always have a
 safety net.
 
-Coming soon: you'll be able to whitelist specific commands to auto-execute with
-the network enabled, once we're confident in additional safeguards.
+### Whitelisting Commands
+
+You can whitelist specific commands to auto-approve without prompting by adding them to
+the `commandWhitelist` in your config file. This is useful for trusted commands like
+editors (`vim`, `code`) or common Git operations. **Note**: The whitelist only takes effect
+when running in modes that would normally require approval (like `suggest` mode), not in
+`full-auto` mode where all commands are already auto-approved.
+
+> **Security Warning**: Whitelisted commands run WITHOUT sandbox restrictions and may have
+> full network access. Only whitelist commands that you fully trust.
 
 ### Platform sandboxing details
 
@@ -318,6 +327,10 @@ model: o4-mini # Default model
 approvalMode: suggest # or auto-edit, full-auto
 fullAutoErrorMode: ask-user # or ignore-and-continue
 notify: true # Enable desktop notifications for responses
+commandWhitelist: # List of trusted commands to auto-approve
+  - "vim"
+  - "code"
+  - "git commit -m"
 ```
 
 ```json
@@ -326,7 +339,8 @@ notify: true # Enable desktop notifications for responses
   "model": "o4-mini",
   "approvalMode": "suggest",
   "fullAutoErrorMode": "ask-user",
-  "notify": true
+  "notify": true,
+  "commandWhitelist": ["vim", "code", "git commit -m"]
 }
 ```
 

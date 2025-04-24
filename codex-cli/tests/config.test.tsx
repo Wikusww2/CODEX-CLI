@@ -71,11 +71,15 @@ test("saves and loads config correctly", () => {
     model: "test-model",
     instructions: "test instructions",
     notify: false,
+    commandWhitelist: ["npm run", "yarn test"],
   };
   saveConfig(testConfig, testConfigPath, testInstructionsPath);
 
   // Our in‑memory fs should now contain those keys:
-  expect(memfs[testConfigPath]).toContain(`"model": "test-model"`);
+  // Parse the saved config to check its contents
+  const savedConfig = JSON.parse(memfs[testConfigPath] as string);
+  expect(savedConfig.model).toBe("test-model");
+  expect(savedConfig.commandWhitelist).toEqual(["npm run", "yarn test"]);
   expect(memfs[testInstructionsPath]).toBe("test instructions");
 
   const loadedConfig = loadConfig(testConfigPath, testInstructionsPath, {
@@ -84,6 +88,7 @@ test("saves and loads config correctly", () => {
   // Check just the specified properties that were saved
   expect(loadedConfig.model).toBe(testConfig.model);
   expect(loadedConfig.instructions).toBe(testConfig.instructions);
+  expect(loadedConfig.commandWhitelist).toEqual(testConfig.commandWhitelist);
 });
 
 test("loads user instructions + project doc when codex.md is present", () => {
