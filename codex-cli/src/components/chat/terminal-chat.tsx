@@ -151,6 +151,41 @@ export default function TerminalChat({
     initialApprovalPolicy,
   );
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  // Allow toggling flex-mode mid-session
+  const [flexMode, setFlexMode] = useState<boolean>(Boolean(config.flexMode));
+  const handleToggleFlexMode = (): void => {
+    const newFlex = !flexMode;
+    // Update config for future API calls
+    config.flexMode = newFlex;
+    // Update existing AgentLoop instance if present
+    if (agentRef.current) {
+      // Use public API to update flexMode
+      agentRef.current.setFlexMode(newFlex);
+    }
+    setFlexMode(newFlex);
+    // Append system message to inform user
+    setItems((prev) => {
+      const msgText = newFlex ? "Flex mode enabled" : "Flex mode disabled";
+      // Avoid repeating the same toggle message consecutively
+      const last = prev[prev.length - 1];
+      if (
+        last?.type === "message" &&
+        last.content?.[0]?.type === "input_text" &&
+        last.content[0].text === msgText
+      ) {
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          id: `flexmode-${Date.now()}`,
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text: msgText }],
+        } as ResponseItem,
+      ];
+    });
+  };
 
   const handleCompact = async () => {
     setLoading(true);
@@ -480,7 +515,7 @@ export default function TerminalChat({
               colorsByPolicy,
               agent,
               initialImagePaths,
-              flexModeEnabled: Boolean(config.flexMode),
+              flexModeEnabled: flexMode,
             }}
           />
         ) : (
@@ -531,6 +566,7 @@ export default function TerminalChat({
               setOverlayMode("none");
             }}
             onCompact={handleCompact}
+            toggleFlexMode={handleToggleFlexMode}
             active={overlayMode === "none"}
             interruptAgent={() => {
               if (!agent) {

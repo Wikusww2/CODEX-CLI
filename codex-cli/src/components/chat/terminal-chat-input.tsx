@@ -14,6 +14,7 @@ import { getFileSystemSuggestions } from "../../utils/file-system-suggestions.js
 import { createInputItem } from "../../utils/input-utils.js";
 import { log } from "../../utils/logger/log.js";
 import { setSessionId } from "../../utils/session.js";
+import { handleSlashCommand } from "../../utils/slash-command-handlers";
 import { SLASH_COMMANDS, type SlashCommand } from "../../utils/slash-commands";
 import {
   loadCommandHistory,
@@ -52,6 +53,7 @@ export default function TerminalChatInput({
   openApprovalOverlay,
   openHelpOverlay,
   openDiffOverlay,
+  toggleFlexMode,
   onCompact,
   interruptAgent,
   active,
@@ -75,6 +77,7 @@ export default function TerminalChatInput({
   openApprovalOverlay: () => void;
   openHelpOverlay: () => void;
   openDiffOverlay: () => void;
+  toggleFlexMode: () => void;
   onCompact: () => void;
   interruptAgent: () => void;
   active: boolean;
@@ -190,6 +193,12 @@ export default function TerminalChatInput({
                   break;
                 case "/bug":
                   onSubmit(cmd);
+                  break;
+                case "/flex-mode":
+                  setInput("");
+                  setDraftInput("");
+                  setSelectedSlashSuggestion(0);
+                  toggleFlexMode();
                   break;
                 case "/clear":
                   onSubmit(cmd);
@@ -353,39 +362,19 @@ export default function TerminalChatInput({
         return;
       }
 
-      if (inputValue === "/history") {
-        setInput("");
-        openOverlay();
-        return;
-      }
-
-      if (inputValue === "/help") {
-        setInput("");
-        openHelpOverlay();
-        return;
-      }
-
-      if (inputValue === "/diff") {
-        setInput("");
-        openDiffOverlay();
-        return;
-      }
-
-      if (inputValue === "/compact") {
-        setInput("");
-        onCompact();
-        return;
-      }
-
-      if (inputValue.startsWith("/model")) {
-        setInput("");
-        openModelOverlay();
-        return;
-      }
-
-      if (inputValue.startsWith("/approval")) {
-        setInput("");
-        openApprovalOverlay();
+      // Handle built-in slash commands
+      if (
+        handleSlashCommand(inputValue, {
+          setInput,
+          openOverlay,
+          openHelpOverlay,
+          openDiffOverlay,
+          onCompact,
+          openModelOverlay,
+          openApprovalOverlay,
+          toggleFlexMode,
+        })
+      ) {
         return;
       }
 
@@ -624,6 +613,7 @@ export default function TerminalChatInput({
       onCompact,
       skipNextSubmit,
       items,
+      toggleFlexMode,
     ],
   );
 

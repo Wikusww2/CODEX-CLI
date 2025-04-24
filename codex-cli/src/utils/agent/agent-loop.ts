@@ -235,6 +235,9 @@ export class AgentLoop {
 
     this.cancel();
   }
+  public setFlexMode(enabled: boolean): void {
+    this.config.flexMode = enabled;
+  }
 
   public sessionId: string;
   /*
@@ -675,6 +678,12 @@ export class AgentLoop {
                     );
             log(
               `instructions (length ${mergedInstructions.length}): ${mergedInstructions}`,
+            );
+            // Log flex-mode usage on each OpenAI request
+            log(
+              `OpenAI request parameters: model=${this.model}, service_tier=${
+                this.config.flexMode ? "flex" : "default"
+              }`,
             );
 
             // eslint-disable-next-line no-await-in-loop
