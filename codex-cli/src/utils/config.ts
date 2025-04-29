@@ -7,6 +7,7 @@
 // compiled `dist/` output used by the published CLI.
 
 import type { FullAutoErrorMode } from "./auto-approval-mode.js";
+import type { TranscriptionSessionCreateParams } from "openai/resources/beta/realtime/transcription-sessions.mjs";
 
 import { AutoApprovalMode } from "./auto-approval-mode.js";
 import { log } from "./logger/log.js";
@@ -142,6 +143,7 @@ export type StoredConfig = {
     saveHistory?: boolean;
     sensitivePatterns?: Array<string>;
   };
+  transcription?: TranscriptionConfig;
 };
 
 // Minimal config written on first run.  An *empty* model string ensures that
@@ -156,6 +158,13 @@ export type MemoryConfig = {
   enabled: boolean;
 };
 
+/** Settings for speech-to-text transcription, taken directly from the OpenAI Realtime API. */
+export type TranscriptionConfig = {
+  input_audio_transcription?: TranscriptionSessionCreateParams.InputAudioTranscription;
+  turn_detection?: TranscriptionSessionCreateParams.TurnDetection;
+  input_audio_noise_reduction?: TranscriptionSessionCreateParams.InputAudioNoiseReduction;
+};
+
 // Represents full runtime config, including loaded instructions.
 export type AppConfig = {
   apiKey?: string;
@@ -165,6 +174,7 @@ export type AppConfig = {
   approvalMode?: AutoApprovalMode;
   fullAutoErrorMode?: FullAutoErrorMode;
   memory?: MemoryConfig;
+  transcription?: TranscriptionConfig;
   /** Whether to enable desktop notifications for responses */
   notify?: boolean;
 
@@ -446,6 +456,11 @@ export const loadConfig = (
   // Merge default providers with user configured providers in the config.
   config.providers = { ...providers, ...storedConfig.providers };
 
+  // Load transcription config if it exists
+  if (storedConfig.transcription !== undefined) {
+    config.transcription = storedConfig.transcription;
+  }
+
   return config;
 };
 
@@ -480,6 +495,7 @@ export const saveConfig = (
     provider: config.provider,
     providers: config.providers,
     approvalMode: config.approvalMode,
+    transcription: config.transcription,
   };
 
   // Add history settings if they exist

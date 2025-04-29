@@ -1,6 +1,7 @@
 import type { MultilineTextEditorHandle } from "./multiline-editor";
 import type { ReviewDecision } from "../../utils/agent/review.js";
 import type { HistoryEntry } from "../../utils/storage/command-history.js";
+import type { TranscriptionEvent } from "../../utils/transcriber.js";
 import type {
   ResponseInputItem,
   ResponseItem,
@@ -20,6 +21,7 @@ import {
   addToHistory,
 } from "../../utils/storage/command-history.js";
 import { clearTerminal, onExit } from "../../utils/terminal.js";
+import { RealtimeTranscriber } from "../../utils/transcriber.js";
 import { Box, Text, useApp, useInput, useStdin } from "ink";
 import { fileURLToPath } from "node:url";
 import React, {
@@ -101,6 +103,11 @@ export default function TerminalChatInput({
   // Track the caret row across keystrokes
   const prevCursorRow = useRef<number | null>(null);
   const prevCursorWasAtLastRow = useRef<boolean>(false);
+  // Track recording state
+  const [isRecording, setIsRecording] = useState(false);
+  // Track if recording should resume after thinking
+  const [shouldResumeRecording, setShouldResumeRecording] = useState(false);
+  const transcriber = useRef<RealtimeTranscriber | null>(null);
 
   // Load command history on component mount
   useEffect(() => {
@@ -111,6 +118,25 @@ export default function TerminalChatInput({
 
     loadHistory();
   }, []);
+
+  // Handle pausing/resuming recording when loading state changes
+  useEffect(() => {
+    if (loading && isRecording) {
+      // Pause recording while thinking
+      setIsRecording(false);
+      setShouldResumeRecording(true);
+
+      if (transcriber.current) {
+        transcriber.current.cleanup();
+        transcriber.current = null;
+      }
+    } else if (!loading && shouldResumeRecording) {
+      // Resume recording when thinking is done
+      setIsRecording(true);
+      setShouldResumeRecording(false);
+    }
+  }, [loading, isRecording, shouldResumeRecording, setItems]);
+
   // Reset slash suggestion index when input prefix changes
   useEffect(() => {
     if (input.trim().startsWith("/")) {
@@ -118,8 +144,125 @@ export default function TerminalChatInput({
     }
   }, [input]);
 
+  // Start/stop speech transcription when isRecording changes
+  useEffect(() => {
+    if (isRecording) {
+      // Initialize and start transcriber
+      const startTranscription = async () => {
+        try {
+          transcriber.current = new RealtimeTranscriber();
+
+          transcriber.current.on(
+            "transcription",
+            (event: TranscriptionEvent) => {
+              if (event.type === "transcription.delta" && event.delta) {
+                // transcription doesn't start until after the VAD detects the speech has finished
+                setInput((prev) => prev + event.delta);
+                // Force re-render of the editor with the latest text
+                setEditorKey((k) => k + 1);
+                setTimeout(() => {
+                  editorRef.current?.moveCursorToEnd?.();
+                }, 0);
+              } else if (
+                event.type === "transcription.done" &&
+                event.transcript
+              ) {
+                // occurs when the speech has finished being transcribed
+                setInput((prev) => prev + "\n"); // new line to indicate it's finished transcribing that speech
+                setEditorKey((k) => k + 1);
+                setTimeout(() => {
+                  editorRef.current?.moveCursorToEnd?.();
+                }, 0);
+              }
+            },
+          );
+
+          transcriber.current.on("error", (error) => {
+            setIsRecording(false);
+            setShouldResumeRecording(false);
+            setItems((prev) => [
+              ...prev,
+              {
+                id: `speak-transcription-error-${Date.now()}`,
+                type: "message",
+                role: "system",
+                content: [
+                  {
+                    type: "input_text",
+                    text: `Transcription ${error}`,
+                  },
+                ],
+              },
+            ]);
+
+            // Clean up the transcriber
+            if (transcriber.current) {
+              transcriber.current.cleanup();
+              transcriber.current = null;
+            }
+          });
+
+          await transcriber.current.start();
+        } catch (error) {
+          setIsRecording(false);
+          setShouldResumeRecording(false);
+          setItems((prev) => [
+            ...prev,
+            {
+              id: `speak-start-error-${Date.now()}`,
+              type: "message",
+              role: "system",
+              content: [
+                {
+                  type: "input_text",
+                  text: `Error starting transcription: ${error}`,
+                },
+              ],
+            },
+          ]);
+        }
+      };
+
+      startTranscription();
+    } else if (transcriber.current) {
+      // Clean up transcriber when recording stops
+      transcriber.current.cleanup();
+      transcriber.current = null;
+
+      // Input will be submitted by the user manually after reviewing
+    }
+
+    return () => {
+      if (transcriber.current) {
+        transcriber.current.cleanup();
+        transcriber.current = null;
+      }
+    };
+  }, [isRecording, setItems, setEditorKey]);
+
   useInput(
-    (_input, _key) => {
+    (char_input, key) => {
+      // Stop recording if any key except enter is pressed while recording
+      if (isRecording && !key.return) {
+        setIsRecording(false);
+        setShouldResumeRecording(false);
+        setItems((prev) => [
+          ...prev,
+          {
+            id: `speak-stop-${Date.now()}`,
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: "Recording stopped.",
+              },
+            ],
+          },
+        ]);
+        return;
+      }
+
       // Slash command navigation: up/down to select, enter to fill
       if (!confirmationPrompt && !loading && input.trim().startsWith("/")) {
         const prefix = input.trim();
@@ -127,11 +270,11 @@ export default function TerminalChatInput({
           cmd.command.startsWith(prefix),
         );
         if (matches.length > 0) {
-          if (_key.tab) {
+          if (key.tab) {
             // Cycle and fill slash command suggestions on Tab
             const len = matches.length;
             // Determine new index based on shift state
-            const nextIdx = _key.shift
+            const nextIdx = key.shift
               ? selectedSlashSuggestion <= 0
                 ? len - 1
                 : selectedSlashSuggestion - 1
@@ -149,19 +292,19 @@ export default function TerminalChatInput({
             setDraftInput(cmd);
             return;
           }
-          if (_key.upArrow) {
+          if (key.upArrow) {
             setSelectedSlashSuggestion((prev) =>
               prev <= 0 ? matches.length - 1 : prev - 1,
             );
             return;
           }
-          if (_key.downArrow) {
+          if (key.downArrow) {
             setSelectedSlashSuggestion((prev) =>
               prev < 0 || prev >= matches.length - 1 ? 0 : prev + 1,
             );
             return;
           }
-          if (_key.return) {
+          if (key.return) {
             // Execute the currently selected slash command
             const selIdx = selectedSlashSuggestion;
             const cmdObj = matches[selIdx];
@@ -189,6 +332,9 @@ export default function TerminalChatInput({
                 case "/diff":
                   openDiffOverlay();
                   break;
+                case "/speak":
+                  onSubmit(cmd);
+                  break;
                 case "/bug":
                   onSubmit(cmd);
                   break;
@@ -208,21 +354,21 @@ export default function TerminalChatInput({
       }
       if (!confirmationPrompt && !loading) {
         if (fsSuggestions.length > 0) {
-          if (_key.upArrow) {
+          if (key.upArrow) {
             setSelectedCompletion((prev) =>
               prev <= 0 ? fsSuggestions.length - 1 : prev - 1,
             );
             return;
           }
 
-          if (_key.downArrow) {
+          if (key.downArrow) {
             setSelectedCompletion((prev) =>
               prev >= fsSuggestions.length - 1 ? 0 : prev + 1,
             );
             return;
           }
 
-          if (_key.tab && selectedCompletion >= 0) {
+          if (key.tab && selectedCompletion >= 0) {
             const words = input.trim().split(/\s+/);
             const selected = fsSuggestions[selectedCompletion];
 
@@ -245,7 +391,7 @@ export default function TerminalChatInput({
           }
         }
 
-        if (_key.upArrow) {
+        if (key.upArrow) {
           let moveThroughHistory = true;
 
           // Only use history when the caret was *already* on the very first
@@ -284,7 +430,7 @@ export default function TerminalChatInput({
           // Otherwise let it propagate.
         }
 
-        if (_key.downArrow) {
+        if (key.downArrow) {
           // Only move forward in history when we're already *in* history mode
           // AND the caret sits on the last line of the buffer.
           const wasAtLastRow =
@@ -307,7 +453,7 @@ export default function TerminalChatInput({
           // Otherwise let it propagate
         }
 
-        if (_key.tab) {
+        if (key.tab) {
           const words = input.split(/\s+/);
           const mostRecentWord = words[words.length - 1];
           if (mostRecentWord === undefined || mostRecentWord === "") {
@@ -343,11 +489,11 @@ export default function TerminalChatInput({
       }, 1);
 
       if (input.trim() === "" && isNew) {
-        if (_key.tab) {
+        if (key.tab) {
           setSelectedSuggestion(
-            (s) => (s + (_key.shift ? -1 : 1)) % (suggestions.length + 1),
+            (s) => (s + (key.shift ? -1 : 1)) % (suggestions.length + 1),
           );
-        } else if (selectedSuggestion && _key.return) {
+        } else if (selectedSuggestion && key.return) {
           const suggestion = suggestions[selectedSuggestion - 1] || "";
           setInput("");
           setSelectedSuggestion(0);
@@ -359,7 +505,7 @@ export default function TerminalChatInput({
             },
           ]);
         }
-      } else if (_input === "\u0003" || (_input === "c" && _key.ctrl)) {
+      } else if (char_input === "\u0003" || (char_input === "c" && key.ctrl)) {
         setTimeout(() => {
           app.exit();
           onExit();
@@ -539,6 +685,26 @@ export default function TerminalChatInput({
         }
 
         return;
+      } else if (inputValue.startsWith("/speak")) {
+        // Handle /speak command
+        setIsRecording(true);
+        setShouldResumeRecording(false);
+        setInput("");
+        setItems((prev) => [
+          ...prev,
+          {
+            id: `speak-start-${Date.now()}`,
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: "Recording started. Press any key (except enter) to stop recording.",
+              },
+            ],
+          },
+        ]);
+        return;
       } else if (inputValue.startsWith("/")) {
         // Handle invalid/unrecognized commands. Only single-word inputs starting with '/'
         // (e.g., /command) that are not recognized are caught here. Any other input, including
@@ -665,6 +831,11 @@ export default function TerminalChatInput({
           />
         ) : (
           <Box paddingX={1}>
+            {isRecording && (
+              <Box paddingRight={1}>
+                <Text color="red">●</Text>
+              </Box>
+            )}
             <MultilineTextEditor
               ref={editorRef}
               onChange={(txt: string) => {
