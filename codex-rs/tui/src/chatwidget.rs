@@ -18,7 +18,6 @@ use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::mpsc::UnboundedSender;
-
 use crate::app_event::AppEvent;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
@@ -136,6 +135,11 @@ impl ChatWidget<'_> {
             return Ok(());
         }
 
+        // Handle arrow keys for history navigation
+        if self.input_focus == InputFocus::BottomPane {
+          
+        }
+
         match self.input_focus {
             InputFocus::HistoryPane => {
                 let needs_redraw = self.conversation_history.handle_key_event(key_event);
@@ -145,32 +149,58 @@ impl ChatWidget<'_> {
                 Ok(())
             }
             InputFocus::BottomPane => {
-                match self.bottom_pane.handle_key_event(key_event)? {
-                    InputResult::Submitted(text) => {
-                        // Special client‑side commands start with a leading slash.
-                        let trimmed = text.trim();
-
-                        match trimmed {
-                            "q" => {
-                                // Gracefully request application shutdown.
-                                let _ = self.app_event_tx.send(AppEvent::ExitRequest);
-                            }
-                            "/clear" => {
-                                // Clear the current conversation history without exiting.
-                                self.conversation_history.clear();
-                                self.request_redraw()?;
-                            }
-                            _ => {
-                                self.submit_user_message(text)?;
-                            }
+                match key_event.code {
+                    crossterm::event::KeyCode::Up if self.bottom_pane.cursor_position() == 0 => {
+                        // Only navigate history if cursor is at position 0
+                        if let Some(previous_message) = self.conversation_history.previous() {
+                            self.bottom_pane.set_input_text(previous_message)?;
+                            self.request_redraw()?;
                         }
+                        return Ok(());
                     }
-                    InputResult::None => {}
+                    crossterm::event::KeyCode::Down if self.bottom_pane.cursor_position() == 0 => {
+                        // Only navigate history if cursor is at position 0
+                        if let Some(next_message) = self.conversation_history.next() {
+                            self.bottom_pane.set_input_text(next_message)?;
+                        } else {
+                            // If there's no next message, clear the input
+                            self.bottom_pane.set_input_text(String::new())?;
+                        }
+                        self.request_redraw()?;
+                        return Ok(());
+                    }
+                    _ => {
+                        match self.bottom_pane.handle_key_event(key_event)? {
+                            InputResult::Submitted(text) => {
+                                // Special client‑side commands start with a leading slash.
+                                let trimmed = text.trim();
+
+                                match trimmed {
+                                    "q" => {
+                                        // Gracefully request application shutdown.
+                                        let _ = self.app_event_tx.send(AppEvent::ExitRequest);
+                                    }
+                                    "/clear" => {
+                                        // Clear the current conversation history without exiting.
+                                        self.conversation_history.clear();
+                                        self.submit_welcome_message()?;
+                                        self.conversation_history.scroll_to_bottom();
+                                    }
+                                    _ => {
+                                        self.submit_user_message(text)?;
+                                    }
+                                }
+                            }
+                            InputResult::None => {}
+                        }
+                        Ok(())
+                    }
                 }
-                Ok(())
             }
         }
     }
+                
+               
 
     fn submit_welcome_message(&mut self) -> std::result::Result<(), SendError<AppEvent>> {
         self.handle_codex_event(Event {
@@ -250,9 +280,14 @@ impl ChatWidget<'_> {
                 self.bottom_pane.set_task_running(false)?;
                 self.request_redraw()?;
             }
+            EventMsg::TaskInterrupted { message } => {
+                self.conversation_history
+                    .add_system_message(format!("{message:?}"));
+                self.bottom_pane.set_task_running(false)?;
+            }
             EventMsg::Error { message } => {
                 self.conversation_history
-                    .add_background_event(format!("Error: {message}"));
+                    .add_system_message(format!("{message}"));
                 self.bottom_pane.set_task_running(false)?;
             }
             EventMsg::ExecApprovalRequest {
