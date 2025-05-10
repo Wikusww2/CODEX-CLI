@@ -33,8 +33,8 @@ pub enum ResponseEvent {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Reasoning {
-    pub(crate) effort: &'static str,
+pub(crate) struct Reasoning<'a> {
+    pub(crate) effort: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) generate_summary: Option<bool>,
 }
@@ -51,7 +51,7 @@ pub(crate) struct Payload<'a> {
     pub(crate) tools: &'a [serde_json::Value],
     pub(crate) tool_choice: &'static str,
     pub(crate) parallel_tool_calls: bool,
-    pub(crate) reasoning: Option<Reasoning>,
+    pub(crate) reasoning: Option<Reasoning<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) previous_response_id: Option<String>,
     /// true when using the Responses API.

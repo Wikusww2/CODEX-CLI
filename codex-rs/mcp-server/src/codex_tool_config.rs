@@ -159,6 +159,7 @@ impl CodexToolCallParam {
             sandbox_policy,
             disable_response_storage,
             provider: None,
+            reasoning_level: None, // TODO: Thread this from JsonSchema
         };
 
         let cfg = codex_core::config::Config::load_with_overrides(overrides)?;

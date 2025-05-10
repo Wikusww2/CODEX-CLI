@@ -60,6 +60,9 @@ pub enum Op {
         /// `ConfigureSession` operation so that the business-logic layer can
         /// operate deterministically.
         cwd: std::path::PathBuf,
+
+        /// Reasoning level for the agent.
+        reasoning_level: String,
     },
 
     /// Abort current task.

@@ -39,4 +39,8 @@ pub struct Cli {
     /// Disable server‑side response storage (sends the full conversation context with every request)
     #[arg(long = "disable-response-storage", default_value_t = false)]
     pub disable_response_storage: bool,
+
+    /// Configure the amount of reasoning the model should do before executing a command.
+    #[arg(long = "reasoning", value_parser = ["low", "medium", "high"])]
+    pub reasoning_level: Option<String>,
 }

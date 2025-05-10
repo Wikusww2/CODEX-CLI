@@ -94,14 +94,16 @@ pub struct ModelClient {
     model: String,
     client: reqwest::Client,
     provider: ModelProviderInfo,
+    reasoning_level: String,
 }
 
 impl ModelClient {
-    pub fn new(model: impl ToString, provider: ModelProviderInfo) -> Self {
+    pub fn new(model: impl ToString, provider: ModelProviderInfo, reasoning_level: String) -> Self {
         Self {
             model: model.to_string(),
             client: reqwest::Client::new(),
             provider,
+            reasoning_level,
         }
     }
 
@@ -172,7 +174,7 @@ impl ModelClient {
             tool_choice: "auto",
             parallel_tool_calls: false,
             reasoning: Some(Reasoning {
-                effort: "high",
+                effort: &self.reasoning_level,
                 generate_summary: None,
             }),
             previous_response_id: prompt.prev_id.clone(),

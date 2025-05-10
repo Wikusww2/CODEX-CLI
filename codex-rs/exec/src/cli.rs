@@ -39,6 +39,10 @@ pub struct Cli {
 
     /// Initial instructions for the agent.
     pub prompt: String,
+
+    /// Reasoning level for the agent.
+    #[arg(long = "reasoning", value_parser = ["low", "medium", "high"])]
+    pub reasoning_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]

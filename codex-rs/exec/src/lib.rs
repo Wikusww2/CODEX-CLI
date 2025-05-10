@@ -32,6 +32,7 @@ pub async fn run_main(cli: Cli) -> anyhow::Result<()> {
         disable_response_storage,
         color,
         prompt,
+        reasoning_level,
     } = cli;
 
     let (stdout_with_ansi, stderr_with_ansi) = match color {
@@ -63,6 +64,7 @@ pub async fn run_main(cli: Cli) -> anyhow::Result<()> {
         },
         cwd: cwd.map(|p| p.canonicalize().unwrap_or(p)),
         provider: None,
+        reasoning_level,
     };
     let config = Config::load_with_overrides(overrides)?;
 
