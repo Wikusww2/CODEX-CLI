@@ -13,7 +13,7 @@ import { useTerminalSize } from "../../hooks/use-terminal-size.js";
 import { AgentLoop } from "../../utils/agent/agent-loop.js";
 import { ReviewDecision } from "../../utils/agent/review.js";
 import { generateCompactSummary } from "../../utils/compact-summary.js";
-import { saveConfig } from "../../utils/config.js";
+import { saveConfig, appendMemoryFile } from "../../utils/config.js";
 import { extractAppliedPatches as _extractAppliedPatches } from "../../utils/extract-applied-patches.js";
 import { getGitDiff } from "../../utils/get-diff.js";
 import { createInputItem } from "../../utils/input-utils.js";
@@ -32,6 +32,7 @@ import DiffOverlay from "../diff-overlay.js";
 import HelpOverlay from "../help-overlay.js";
 import HistoryOverlay from "../history-overlay.js";
 import ModelOverlay from "../model-overlay.js";
+import SettingsOverlay from "../settings-overlay.js";
 import chalk from "chalk";
 import { Box, Text } from "ink";
 import { spawn } from "node:child_process";
@@ -44,7 +45,8 @@ export type OverlayModeType =
   | "model"
   | "approval"
   | "help"
-  | "diff";
+  | "diff"
+  | "settings";
 
 type Props = {
   config: AppConfig;
@@ -149,6 +151,10 @@ export default function TerminalChat({
     initialApprovalPolicy,
   );
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  // Repository-specific memory enabled state
+  const [memoryEnabled, setMemoryEnabled] = useState<boolean>(
+    Boolean(config.memory?.enabled),
+  );
 
   const handleCompact = async () => {
     setLoading(true);
@@ -251,6 +257,26 @@ export default function TerminalChat({
         setItems((prev) => {
           const updated = uniqueById([...prev, item as ResponseItem]);
           saveRollout(sessionId, updated);
+          // Persist memory if enabled: record assistant outputs (only items with content)
+          if (config.memory?.enabled && "content" in item) {
+            try {
+              const contentItems = item.content ?? [];
+              const texts = (
+                contentItems as Array<{ type: "output_text"; text: string }>
+              )
+                .filter(
+                  (c): c is { type: "output_text"; text: string } =>
+                    c.type === "output_text",
+                )
+                .map((c) => c.text)
+                .join(" ");
+              if (texts) {
+                appendMemoryFile(process.cwd(), `codex: ${texts}`);
+              }
+            } catch (err) {
+              log(`Error writing memory file: ${err}`);
+            }
+          }
           return updated;
         });
       },
@@ -529,6 +555,7 @@ export default function TerminalChat({
               // Ensure no overlay is shown.
               setOverlayMode("none");
             }}
+            openSettingsOverlay={() => setOverlayMode("settings")}
             onCompact={handleCompact}
             active={overlayMode === "none"}
             interruptAgent={() => {
@@ -721,6 +748,19 @@ export default function TerminalChat({
         {overlayMode === "diff" && (
           <DiffOverlay
             diffText={diffText}
+            onExit={() => setOverlayMode("none")}
+          />
+        )}
+        {overlayMode === "settings" && (
+          <SettingsOverlay
+            currentMemory={memoryEnabled}
+            onToggle={(enabled) => {
+              setMemoryEnabled(enabled);
+              saveConfig({
+                ...config,
+                memory: { enabled },
+              });
+            }}
             onExit={() => setOverlayMode("none")}
           />
         )}
