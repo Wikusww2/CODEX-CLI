@@ -54,7 +54,6 @@ export default function TerminalChatInput({
   openApprovalOverlay,
   openHelpOverlay,
   openDiffOverlay,
-  openSessionsOverlay,
   onCompact,
   interruptAgent,
   active,
@@ -78,12 +77,10 @@ export default function TerminalChatInput({
   openApprovalOverlay: () => void;
   openHelpOverlay: () => void;
   openDiffOverlay: () => void;
-  openSessionsOverlay: () => void;
   onCompact: () => void;
   interruptAgent: () => void;
   active: boolean;
   thinkingSeconds: number;
-  // New: current conversation items so we can include them in bug reports
   items?: Array<ResponseItem>;
 }): React.ReactElement {
   // Slash command suggestion index
@@ -281,9 +278,6 @@ export default function TerminalChatInput({
               switch (cmd) {
                 case "/history":
                   openOverlay();
-                  break;
-                case "/sessions":
-                  openSessionsOverlay();
                   break;
                 case "/help":
                   openHelpOverlay();
@@ -488,10 +482,6 @@ export default function TerminalChatInput({
       } else if (inputValue === "/history") {
         setInput("");
         openOverlay();
-        return;
-      } else if (inputValue === "/sessions") {
-        setInput("");
-        openSessionsOverlay();
         return;
       } else if (inputValue === "/help") {
         setInput("");
@@ -737,13 +727,52 @@ export default function TerminalChatInput({
       openModelOverlay,
       openHelpOverlay,
       openDiffOverlay,
-      openSessionsOverlay,
       history,
       onCompact,
       skipNextSubmit,
       items,
     ],
   );
+
+  // Add effect to handle stdin mode
+  const { setRawMode, stdin } = useStdin();
+  useEffect(() => {
+    if (active) {
+      try {
+        setRawMode?.(true);
+        
+        // Force stdin to be a TTY if not already
+        if (stdin && typeof stdin.isTTY === 'boolean') {
+          stdin.isTTY = true;
+        }
+      } catch (e) {
+        log(`Failed to set raw mode: ${e}`);
+      }
+    }
+    return () => {
+      if (active) {
+        try {
+          setRawMode?.(false);
+        } catch (e) {
+          log(`Failed to unset raw mode: ${e}`);
+        }
+      }
+    };
+  }, [active, setRawMode, stdin]);
+
+  // Ensure the input field is visible and focused when active
+  useEffect(() => {
+    if (!loading && active) {
+      // Reset input state
+      setInput("");
+      setEditorState((s) => ({ key: s.key + 1 }));
+      
+      // Ensure terminal is properly configured for input
+      if (process.stdout.isTTY) {
+        process.stdout.write("\x1b[?25h"); // Show cursor
+      }
+    }
+  }, [loading, active]);
 
   if (confirmationPrompt) {
     return (
