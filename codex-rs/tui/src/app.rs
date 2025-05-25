@@ -223,6 +223,9 @@ impl<'a> App<'a> {
                         break;
                     }
                 },
+                AppEvent::GetHistoryEntry { log_id, offset } => {
+                    self.chat_widget.submit_op(Op::GetHistoryEntryRequest { log_id, offset });
+                }
             }
         }
         terminal.clear()?;
