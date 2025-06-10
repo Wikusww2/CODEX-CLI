@@ -30,11 +30,51 @@ pub enum InputResult {
     None,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::mpsc;
+
+    #[test]
+    fn double_esc_clears_input() {
+        let (tx, _rx) = mpsc::channel();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, sender);
+        for ch in "hello".chars() {
+            composer.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(composer.textarea.lines().join(""), "hello");
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // first esc should not clear
+        assert_eq!(composer.textarea.lines().join(""), "hello");
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(composer.textarea.lines().join(""), "");
+    }
+
+    #[test]
+    fn esc_other_key_resets_arm() {
+        let (tx, _rx) = mpsc::channel();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, sender);
+        for ch in "bye".chars() {
+            composer.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(composer.textarea.lines().join(""), "byex");
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(composer.textarea.lines().join(""), "");
+    }
+}
+
 pub(crate) struct ChatComposer<'a> {
     textarea: TextArea<'a>,
     command_popup: Option<CommandPopup>,
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
+    escape_armed: bool,
 }
 
 impl ChatComposer<'_> {
@@ -48,6 +88,7 @@ impl ChatComposer<'_> {
             command_popup: None,
             app_event_tx,
             history: ChatComposerHistory::new(),
+            escape_armed: false,
         };
         this.update_border(has_input_focus);
         this
@@ -154,6 +195,18 @@ impl ChatComposer<'_> {
     /// Handle key event when no popup is visible.
     fn handle_key_event_without_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
         let input: Input = key_event.into();
+        if input.key == Key::Esc && !input.ctrl && !input.alt && !input.shift {
+            if self.escape_armed {
+                self.textarea.select_all();
+                self.textarea.cut();
+                self.escape_armed = false;
+            } else {
+                self.escape_armed = true;
+            }
+            return (InputResult::None, true);
+        } else {
+            self.escape_armed = false;
+        }
         match input {
             // -------------------------------------------------------------
             // History navigation (Up / Down) – only when the composer is not
@@ -267,7 +320,7 @@ impl ChatComposer<'_> {
 
         let bs = if has_focus {
             BlockState {
-                right_title: Line::from("Enter to send | Ctrl+D to quit | Ctrl+J for newline")
+                right_title: Line::from("Enter to send | Esc Esc to clear | Ctrl+D to quit | Ctrl+J for newline")
                     .alignment(Alignment::Right),
                 border_style: Style::default(),
             }
