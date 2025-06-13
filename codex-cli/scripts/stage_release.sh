@@ -103,7 +103,7 @@ pnpm build
 # Paths inside the staged package
 mkdir -p "$TMPDIR/bin"
 
-cp -r bin/codex.js "$TMPDIR/bin/codex.js"
+cp -r bin/dirco.js "$TMPDIR/bin/dirco.js"
 cp -r dist "$TMPDIR/dist"
 cp -r src "$TMPDIR/src" # keep source for TS sourcemaps
 cp ../README.md "$TMPDIR" || true # README is one level up - ignore if missing
@@ -133,10 +133,10 @@ echo "Staged version $VERSION for release in $TMPDIR"
 
 if [[ "$INCLUDE_NATIVE" -eq 1 ]]; then
   echo "Test Rust:"
-  echo "    node ${TMPDIR}/bin/codex.js --help"
+  echo "    node ${TMPDIR}/bin/dirco.js --help"
 else
   echo "Test Node:"
-  echo "    node ${TMPDIR}/bin/codex.js --help"
+  echo "    node ${TMPDIR}/bin/dirco.js --help"
 fi
 
 # Print final hint for convenience

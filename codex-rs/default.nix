@@ -31,12 +31,12 @@ rec {
     ];
     shellHook = ''
       echo "Entering development shell for codex-rs"
-      alias codex="cd ${package.src}/tui; cargo run; cd -"
+      alias dirco="cd ${package.src}/tui; cargo run; cd -"
       ${pkgs.rustPlatform.cargoSetupHook}
     '';
   };
   app = {
     type = "app";
-    program = "${package}/bin/codex";
+    program = "${package}/bin/dirco";
   };
 }

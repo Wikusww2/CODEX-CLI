@@ -32,12 +32,12 @@ rec {
       fi
       npm run build || echo "npm build failed"
       export PATH=$PWD/node_modules/.bin:$PATH
-      alias codex="node $PWD/dist/cli.js"
+      alias dirco="node $PWD/dist/cli.js"
     '';
   };
   app = {
     type    = "app";
-    program = "${package}/bin/codex";
+    program = "${package}/bin/dirco";
   };
 }
 

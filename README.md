@@ -126,17 +126,17 @@ export OPENAI_API_KEY="your-api-key-here"
 Run interactively:
 
 ```shell
-codex
+dirco
 ```
 
 Or, run with a prompt as input (and optionally in `Full Auto` mode):
 
 ```shell
-codex "explain this codebase to me"
+dirco "explain this codebase to me"
 ```
 
 ```shell
-codex --approval-mode full-auto "create the fanciest todo-list app"
+dirco --approval-mode full-auto "create the fanciest todo-list app"
 ```
 
 That's it - Codex will scaffold a file, run it inside a sandbox, install any
@@ -690,7 +690,7 @@ nix develop .#codex-cli # For entering codex-cli specific shell
 nix develop .#codex-rs # For entering codex-rs specific shell
 ```
 
-This shell includes Node.js, installs dependencies, builds the CLI, and provides a `codex` command alias.
+This shell includes Node.js, installs dependencies, builds the CLI, and provides a `dirco` command alias.
 
 Build and run the CLI directly:
 
@@ -698,7 +698,7 @@ Build and run the CLI directly:
 # Use either one of the commands according to which implementation you want to work with
 nix build .#codex-cli # For building codex-cli
 nix build .#codex-rs # For building codex-rs
-./result/bin/codex --help
+./result/bin/dirco --help
 ```
 
 Run the CLI via the flake app:
