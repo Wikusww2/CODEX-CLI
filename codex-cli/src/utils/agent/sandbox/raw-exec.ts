@@ -3,9 +3,6 @@ import type { AppConfig } from "../../config";
 import type {
   ChildProcess,
   SpawnOptions,
-  SpawnOptionsWithStdioTuple,
-  StdioNull,
-  StdioPipe,
 } from "child_process";
 
 import { log } from "../../logger/log.js";
@@ -24,8 +21,11 @@ export function exec(
   config: AppConfig,
   abortSignal?: AbortSignal,
 ): Promise<ExecResult> {
-  // Adapt command for the current platform (e.g., convert 'ls' to 'dir' on Windows)
-  const adaptedCommand = adaptCommandForPlatform(command);
+  // On Windows, execute the command using PowerShell. Otherwise, adapt for the platform.
+  const adaptedCommand =
+    process.platform === "win32"
+      ? ["powershell.exe", "-Command", command.join(" ")]
+      : adaptCommandForPlatform(command);
 
   if (JSON.stringify(adaptedCommand) !== JSON.stringify(command)) {
     log(
@@ -68,20 +68,15 @@ export function exec(
   // Even if you pass `{stdio: ["ignore", "pipe", "pipe"] }` to execFile(), the
   // hang still happens as the `stdio` is seemingly ignored. Using spawn()
   // works around this issue.
-  const fullOptions: SpawnOptionsWithStdioTuple<
-    StdioNull,
-    StdioPipe,
-    StdioPipe
-  > = {
+  const isWindows = process.platform === "win32";
+  const fullOptions: SpawnOptions = {
     ...options,
-    // Inherit any caller‑supplied stdio flags but force stdin to "ignore" so
-    // the child never attempts to read from us (see lengthy comment above).
     stdio: ["ignore", "pipe", "pipe"],
-    // Launch the child in its *own* process group so that we can later send a
-    // single signal to the entire group – this reliably terminates not only
-    // the immediate child but also any grandchildren it might have spawned
-    // (think `bash -c "sleep 999"`).
-    detached: true,
+    // On Windows, use a shell to allow local command execution, which is incompatible
+    // with detached mode. On other platforms, use a detached process to enable
+    // killing the entire process group for sandboxing.
+    shell: isWindows,
+    detached: !isWindows,
   };
 
   const child: ChildProcess = spawn(prog, adaptedCommand.slice(1), fullOptions);

@@ -19,18 +19,19 @@ if (major < 22) {
 (process as any).noDeprecation = true;
 
 import type { AppRollout } from "./app";
-import type { ApprovalPolicy } from "./approvals";
+import type { ApprovalPolicy } from "./approvals.js";
 import type { CommandConfirmation } from "./utils/agent/agent-loop";
 import type { AppConfig } from "./utils/config";
 import type { ResponseItem } from "openai/resources/responses/responses";
-import type { ReasoningEffort } from "openai/resources.mjs";
+
+type ReasoningEffort = "low" | "medium" | "high";
 
 import App from "./app";
 import { runSinglePass } from "./cli-singlepass";
 import SessionsOverlay from "./components/sessions-overlay.js";
 import { AgentLoop } from "./utils/agent/agent-loop";
 import { ReviewDecision } from "./utils/agent/review";
-import { AutoApprovalMode } from "./utils/auto-approval-mode";
+
 import { checkForUpdates } from "./utils/check-updates";
 import {
   loadConfig,
@@ -63,6 +64,8 @@ initLogger();
 //
 //     -q, --quiet    Non-interactive quiet mode that only prints final message
 //     -j, --json     Non-interactive JSON output mode that prints JSON messages
+
+console.log('Codex CLI starting execution...');
 
 const cli = meow(
   `
@@ -159,7 +162,7 @@ const cli = meow(
         type: "string",
         aliases: ["a"],
         description:
-          "Determine the approval mode for Codex (default: suggest) Values: suggest, auto-edit, full-auto",
+          "Determine the approval mode for Codex (default: full-auto) Values: suggest, auto-edit, full-auto",
       },
       writableRoot: {
         type: "string",
@@ -534,12 +537,12 @@ if (cli.flags.quiet) {
   }
 
   // Determine approval policy for quiet mode based on flags
-  const quietApprovalPolicy: ApprovalPolicy =
+  let quietApprovalPolicy: ApprovalPolicy =
     cli.flags.fullAuto || cli.flags.approvalMode === "full-auto"
-      ? AutoApprovalMode.FULL_AUTO
+      ? "full-auto"
       : cli.flags.autoEdit || cli.flags.approvalMode === "auto-edit"
-        ? AutoApprovalMode.AUTO_EDIT
-        : config.approvalMode || AutoApprovalMode.SUGGEST;
+        ? "auto-edit"
+        : (config.approvalMode as ApprovalPolicy) || "full-auto";
 
   await runQuietMode({
     prompt,
@@ -565,12 +568,15 @@ if (cli.flags.quiet) {
 // 4. config.approvalMode - use the approvalMode setting from ~/.codex/config.json.
 // 5. Default – suggest mode (prompt for everything).
 
-const approvalPolicy: ApprovalPolicy =
-  cli.flags.fullAuto || cli.flags.approvalMode === "full-auto"
-    ? AutoApprovalMode.FULL_AUTO
-    : cli.flags.autoEdit || cli.flags.approvalMode === "auto-edit"
-      ? AutoApprovalMode.AUTO_EDIT
-      : config.approvalMode || AutoApprovalMode.SUGGEST;
+const approvalPolicy: ApprovalPolicy = cli.flags.dangerouslyAutoApproveEverything
+  ? "full-auto"
+  : cli.flags.fullAuto
+    ? "full-auto"
+    : cli.flags.autoEdit
+      ? "auto-edit"
+      : cli.flags.approvalMode
+        ? (cli.flags.approvalMode as ApprovalPolicy)
+        : (config.approvalMode as ApprovalPolicy) || "full-auto";
 
 const instance = render(
   <App
@@ -670,7 +676,7 @@ async function runQuietMode({
     ): Promise<CommandConfirmation> => {
       // In quiet mode, default to NO_CONTINUE, except when in full-auto mode
       const reviewDecision =
-        approvalPolicy === AutoApprovalMode.FULL_AUTO
+        approvalPolicy === "full-auto"
           ? ReviewDecision.YES
           : ReviewDecision.NO_CONTINUE;
       return Promise.resolve({ review: reviewDecision });

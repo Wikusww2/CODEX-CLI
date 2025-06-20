@@ -3,7 +3,6 @@ import type { ReviewDecision } from "../../utils/agent/review.js";
 import type { FileSystemSuggestion } from "../../utils/file-system-suggestions.js";
 import type { HistoryEntry } from "../../utils/storage/command-history.js";
 import type {
-  ResponseInputItem,
   ResponseItem,
 } from "openai/resources/responses/responses.mjs";
 
@@ -63,7 +62,7 @@ export default function TerminalChatInput({
 }: {
   isNew: boolean;
   loading: boolean;
-  submitInput: (input: Array<ResponseInputItem>) => void;
+  submitInput: (input: Array<ResponseItem>) => void;
   confirmationPrompt: React.ReactNode | null;
   explanation?: string;
   submitConfirmation: (

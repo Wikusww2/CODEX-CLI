@@ -368,7 +368,7 @@ export default function TerminalChat({
         const last = assistantMessages[assistantMessages.length - 1];
         if (last) {
           const text = last.content
-            .map((c) => {
+            .map((c: { type: string; text?: string }) => {
               if (c.type === "output_text") {
                 return c.text;
               }
